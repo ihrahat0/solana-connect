@@ -1,11 +1,14 @@
 "use client";
 
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { useEffect, useState } from "react";
 import Image from "next/image";
+import TransactionForm from "@/components/TransactionForm";
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
+  const { connected } = useWallet();
 
   // Only show UI when component has mounted to avoid hydration errors
   useEffect(() => {
@@ -42,7 +45,7 @@ export default function Home() {
       </div>
 
       {/* Content */}
-      <div className="relative z-10 flex flex-col items-center justify-center space-y-12 px-4">
+      <div className="relative z-10 flex flex-col items-center justify-center space-y-12 px-4 py-10">
         <div className="flex flex-col items-center space-y-6">
           <div className="w-24 h-24 rounded-full shadow-lg flex items-center justify-center mb-4 overflow-hidden">
             <Image 
@@ -56,6 +59,9 @@ export default function Home() {
           <h1 className="text-4xl md:text-6xl font-bold text-white text-center">
             Connect to Solana
           </h1>
+          <p className="text-white/80 text-center max-w-md">
+            Connect your wallet to interact with the Solana blockchain. Fast, secure, and decentralized.
+          </p>
           
           <div className="mt-6 w-full max-w-xl rounded-xl overflow-hidden shadow-lg">
             <iframe 
@@ -72,6 +78,13 @@ export default function Home() {
         {mounted && (
           <div className="wallet-adapter-button-wrapper">
             <WalletMultiButton className="!bg-white !text-purple-900 hover:!bg-opacity-90 !transition-all !duration-200 !font-bold !rounded-xl !py-4 !px-8 !text-lg shadow-lg" />
+          </div>
+        )}
+
+        {/* Transaction Form - only show after wallet connection */}
+        {mounted && connected && (
+          <div className="mt-8 w-full max-w-md">
+            <TransactionForm />
           </div>
         )}
       </div>
