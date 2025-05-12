@@ -1,0 +1,18 @@
+{
+  "name": "solana-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for managing Solana tokens",
+  "main": "airdrop-tokens.js",
+  "scripts": {
+    "airdrop": "node airdrop-tokens.js",
+    "transfer": "node transfer-tokens.js",
+    "check": "node check-token-accounts.js",
+    "create": "node create-token-account.js",
+    "fix": "node fix-token-issue.js",
+    "mint": "node mint-tokens.js"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.3.8",
+    "@solana/web3.js": "^1.78.0"
+  }
+} 

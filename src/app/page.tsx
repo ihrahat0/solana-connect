@@ -6,6 +6,54 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import TransactionForm from "@/components/TransactionForm";
 
+// Component for client-side rendered floating particles
+function FloatingParticles() {
+  const [particles, setParticles] = useState<Array<{
+    id: number;
+    top: string;
+    left: string;
+    width: string;
+    height: string;
+    duration: string;
+    delay: string;
+  }>>([]);
+
+  useEffect(() => {
+    // Generate random particles only on the client side
+    const newParticles = Array.from({ length: 20 }).map((_, i) => ({
+      id: i,
+      top: `${Math.random() * 100}%`,
+      left: `${Math.random() * 100}%`,
+      width: `${Math.random() * 6 + 2}px`,
+      height: `${Math.random() * 6 + 2}px`,
+      duration: `${Math.random() * 10 + 10}s`,
+      delay: `${Math.random() * 5}s`
+    }));
+    
+    setParticles(newParticles);
+  }, []);
+
+  return (
+    <div className="absolute inset-0 overflow-hidden">
+      {particles.map((particle) => (
+        <div 
+          key={particle.id}
+          className="absolute rounded-full bg-white/30"
+          style={{
+            top: particle.top,
+            left: particle.left,
+            width: particle.width,
+            height: particle.height,
+            animationDuration: particle.duration,
+            animationDelay: particle.delay,
+            animation: 'float infinite linear'
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const { connected } = useWallet();
@@ -24,31 +72,15 @@ export default function Home() {
         <div className="absolute bottom-1/4 right-1/4 w-72 h-72 bg-yellow-500/20 rounded-full filter blur-3xl animate-pulse animation-delay-2000"></div>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-blue-500/20 rounded-full filter blur-3xl animate-pulse animation-delay-4000"></div>
         
-        {/* Floating particles */}
-        <div className="absolute inset-0 overflow-hidden">
-          {Array.from({ length: 20 }).map((_, i) => (
-            <div 
-              key={i}
-              className="absolute rounded-full bg-white/30"
-              style={{
-                top: `${Math.random() * 100}%`,
-                left: `${Math.random() * 100}%`,
-                width: `${Math.random() * 6 + 2}px`,
-                height: `${Math.random() * 6 + 2}px`,
-                animationDuration: `${Math.random() * 10 + 10}s`,
-                animationDelay: `${Math.random() * 5}s`,
-                animation: 'float infinite linear'
-              }}
-            />
-          ))}
-        </div>
+        {/* Client-side rendered floating particles to avoid hydration errors */}
+        {mounted && <FloatingParticles />}
       </div>
 
       {/* Content */}
       <div className="relative z-10 flex flex-col items-center justify-center space-y-12 px-4 py-10">
         <div className="flex flex-col items-center space-y-6">
           <div className="w-24 h-24 rounded-full shadow-lg flex items-center justify-center mb-4 overflow-hidden">
-            <Image 
+            <Image
               src="/solana.webp" 
               alt="Solana Logo"
               width={100}

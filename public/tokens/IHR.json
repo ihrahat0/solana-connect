@@ -1,0 +1,19 @@
+{
+  "name": "IH RAHAT",
+  "symbol": "IHR",
+  "description": "IH RAHAT (IHR) is a token created on Solana devnet for demonstration purposes.",
+  "image": "/tokens/ihr-logo.svg",
+  "decimals": 9,
+  "website": "",
+  "twitter": "",
+  "telegram": "",
+  "extensions": {
+    "address": "FTGo5F681LepoU2qTasLtk325T2iX6F6onFHpvo5Hvci",
+    "assetContract": "FTGo5F681LepoU2qTasLtk325T2iX6F6onFHpvo5Hvci",
+    "bridgeContract": "",
+    "coingeckoId": "",
+    "serumV3Usdc": "",
+    "serumV3Usdt": "",
+    "waterfallbot": ""
+  }
+} 

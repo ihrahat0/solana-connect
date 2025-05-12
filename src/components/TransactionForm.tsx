@@ -1,29 +1,96 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useContext } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import * as web3 from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, getOrCreateAssociatedTokenAccount, createTransferInstruction } from "@solana/spl-token";
+import { 
+  getOrCreateAssociatedTokenAccount, 
+  createTransferInstruction, 
+  getMint,
+  getAssociatedTokenAddress,
+  getAccount,
+  createAssociatedTokenAccountInstruction
+} from "@solana/spl-token";
 import { PublicKey } from "@solana/web3.js";
+import { NetworkContext } from "@/providers/WalletContextProvider";
+import NetworkSwitcher from "./NetworkSwitcher";
 
 type TokenType = "SOL" | "SPL";
+
+// Helper function to retry API calls
+async function retryOperation<T>(
+  operation: () => Promise<T>,
+  maxRetries = 3,
+  delay = 1000
+): Promise<T> {
+  let lastError: Error;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      console.log(`Attempt ${attempt + 1} failed:`, error.message);
+      lastError = error;
+      
+      // If it's not a 403/429 error, don't retry
+      if (!error.message.includes("403") && !error.message.includes("429")) {
+        throw error;
+      }
+      
+      // Wait before retrying
+      if (attempt < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, delay * (attempt + 1)));
+      }
+    }
+  }
+  
+  throw lastError!;
+}
 
 export default function TransactionForm() {
   const { connection } = useConnection();
   const { publicKey, sendTransaction } = useWallet();
+  const { network } = useContext(NetworkContext);
   
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
   const [tokenType, setTokenType] = useState<TokenType>("SOL");
   const [tokenAddress, setTokenAddress] = useState("");
+  const [tokenDecimals, setTokenDecimals] = useState(9); // Default decimals
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState<{ success: boolean; message: string } | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
+  const [isCreatingTokenAccount, setIsCreatingTokenAccount] = useState(false);
 
   useEffect(() => {
     setIsConnected(!!publicKey);
   }, [publicKey]);
+
+  // When token address changes, try to fetch token info
+  useEffect(() => {
+    const fetchTokenInfo = async () => {
+      if (!tokenAddress || !connection) return;
+      
+      try {
+        const mintPubkey = new web3.PublicKey(tokenAddress);
+        
+        // Use retry logic for getting mint info
+        const mintInfo = await retryOperation(() => 
+          getMint(connection, mintPubkey)
+        );
+        
+        setTokenDecimals(mintInfo.decimals);
+      } catch (error) {
+        console.log("Error fetching token info:", error);
+        // Keep default decimals
+      }
+    };
+    
+    if (tokenType === "SPL") {
+      fetchTokenInfo();
+    }
+  }, [tokenAddress, connection, tokenType]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,9 +118,23 @@ export default function TransactionForm() {
       setAmount("");
     } catch (error: any) {
       console.error("Transaction error:", error);
+      
+      // Provide more user-friendly error messages
+      let errorMessage = error.message;
+      
+      if (error.message.includes("TokenAccountNotFound") || error.message.includes("Account does not exist")) {
+        errorMessage = "Error creating token account. Please try again.";
+      } else if (error.message.includes("insufficient funds")) {
+        errorMessage = "Insufficient funds for this transaction. Make sure you have enough tokens.";
+      } else if (error.message.includes("owner does not match")) {
+        errorMessage = "Owner mismatch error. Make sure you're using the correct wallet.";
+      } else if (error.message.includes("403")) {
+        errorMessage = "Network access forbidden. Please check your network settings or try again later.";
+      }
+      
       setStatus({
         success: false,
-        message: `Transaction failed: ${error.message}`,
+        message: `Transaction failed: ${errorMessage}`,
       });
     } finally {
       setIsLoading(false);
@@ -96,37 +177,85 @@ export default function TransactionForm() {
       const recipientPubkey = new web3.PublicKey(recipient);
       const mintPubkey = new web3.PublicKey(tokenAddress);
       
-      // Get the token account of the sender
-      const senderTokenAccount = await getOrCreateAssociatedTokenAccount(
-        connection,
-        publicKey as any, // This is a hack because the type definitions don't match
+      // Find the associated token address for the sender
+      const senderTokenAddress = await getAssociatedTokenAddress(
         mintPubkey,
-        publicKey,
+        publicKey
       );
       
-      // Get or create the token account of the recipient
-      const recipientTokenAccount = await getOrCreateAssociatedTokenAccount(
-        connection,
-        publicKey as any, // This is a hack because the type definitions don't match
+      // Create transaction to hold all instructions
+      const transaction = new web3.Transaction();
+      
+      // Check if the sender's token account exists and create it if it doesn't
+      let senderAccountInfo;
+      try {
+        senderAccountInfo = await connection.getAccountInfo(senderTokenAddress);
+        
+        if (!senderAccountInfo) {
+          console.log("Creating sender token account...");
+          // Create ATA for sender
+          const createSenderAccountIx = await getOrCreateAssociatedTokenAccount(
+            connection,
+            publicKey as any,
+            mintPubkey,
+            publicKey
+          );
+        }
+      } catch (error) {
+        console.log("Error checking sender account, will create:", error);
+        // Will be created below
+      }
+      
+      // Find the associated token address for the recipient
+      const recipientTokenAddress = await getAssociatedTokenAddress(
         mintPubkey,
         recipientPubkey
       );
       
-      // Calculate the amount with decimals (assuming 9 decimals which is common for SPL tokens)
-      // In a production app, you would fetch the token's decimals from the blockchain
-      const tokenDecimals = 9;
+      // Check if recipient token account exists
+      let recipientAccountInfo;
+      try {
+        recipientAccountInfo = await connection.getAccountInfo(recipientTokenAddress);
+      } catch (error) {
+        console.log("Error checking recipient account:", error);
+      }
+      
+      // If recipient account doesn't exist, add creation instruction
+      if (!recipientAccountInfo) {
+        console.log("Adding instruction to create recipient token account");
+        const createAccountInstruction = createAssociatedTokenAccountInstruction(
+          publicKey,
+          recipientTokenAddress,
+          recipientPubkey,
+          mintPubkey
+        );
+        transaction.add(createAccountInstruction);
+      }
+      
+      // Get the token account to check balance
+      const senderTokenAccount = await getAccount(
+        connection,
+        senderTokenAddress
+      );
+      
+      // Check if the sender has any tokens
+      if (senderTokenAccount.amount === BigInt(0)) {
+        throw new Error("You don't have any tokens in your wallet. Please add some tokens first.");
+      }
+      
+      // Calculate the amount with decimals
       const amountToSend = parseFloat(amount) * Math.pow(10, tokenDecimals);
       
       // Create the transfer instruction
       const transferInstruction = createTransferInstruction(
-        senderTokenAccount.address,
-        recipientTokenAccount.address,
+        senderTokenAddress,
+        recipientTokenAddress,
         publicKey,
         BigInt(Math.round(amountToSend))
       );
       
-      // Add the instruction to a transaction
-      const transaction = new web3.Transaction().add(transferInstruction);
+      // Add the transfer instruction to the transaction
+      transaction.add(transferInstruction);
       
       // Sign and send the transaction
       const signature = await sendTransaction(transaction, connection);
@@ -135,9 +264,89 @@ export default function TransactionForm() {
       await connection.confirmTransaction(signature, "confirmed");
       
       return signature;
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error sending SPL token:", error);
+      
+      // Check for specific errors
+      if (error.message && error.message.includes("403")) {
+        throw new Error("Network access forbidden. Please check your network settings or try again later.");
+      } else if (error instanceof Error && error.name === "TokenAccountNotFoundError") {
+        throw new Error("Token account not found. Please try again.");
+      }
+      
       throw error;
+    }
+  };
+
+  const createTokenAccount = async () => {
+    if (!publicKey || !tokenAddress) return;
+    
+    setIsCreatingTokenAccount(true);
+    setStatus(null);
+    
+    try {
+      // Get the token mint
+      const mintPubkey = new web3.PublicKey(tokenAddress);
+      
+      // Find the associated token address
+      const associatedTokenAddress = await getAssociatedTokenAddress(
+        mintPubkey,
+        publicKey
+      );
+      
+      // Check if the account already exists
+      const accountInfo = await retryOperation(() => 
+        connection.getAccountInfo(associatedTokenAddress)
+      );
+      
+      if (accountInfo) {
+        // Get token account info
+        const tokenAccount = await retryOperation(() => 
+          getAccount(connection, associatedTokenAddress)
+        );
+        
+        // Check balance
+        const uiAmount = Number(tokenAccount.amount) / Math.pow(10, tokenDecimals);
+        setStatus({
+          success: true,
+          message: `Token account already exists with balance: ${uiAmount}`,
+        });
+      } else {
+        // Create the token account
+        const transaction = new web3.Transaction();
+        
+        // Get or create the associated token account
+        const tokenAccount = await retryOperation(() => 
+          getOrCreateAssociatedTokenAccount(
+            connection,
+            publicKey as any,
+            mintPubkey,
+            publicKey
+          )
+        );
+        
+        setStatus({
+          success: true,
+          message: `Token account created successfully! You can now receive tokens at this address.`,
+        });
+      }
+    } catch (error: any) {
+      console.error("Token account creation error:", error);
+      
+      // Check for 403 error specifically
+      if (error.message && error.message.includes("403")) {
+        setStatus({
+          success: false,
+          message: `Failed to create token account: Network access forbidden. Please check your network settings or try again later.`,
+        });
+      } else {
+        setStatus({
+          success: false,
+          message: `Failed to create token account: ${error.message}`,
+        });
+      }
+    } finally {
+      setIsCreatingTokenAccount(false);
     }
   };
 
@@ -153,16 +362,7 @@ export default function TransactionForm() {
     <div className="p-6 bg-white/10 backdrop-blur-lg rounded-xl w-full max-w-md">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-2xl font-bold text-white">Send Tokens</h2>
-        <button 
-          type="button"
-          onClick={() => setShowInstructions(!showInstructions)}
-          className="text-white/80 hover:text-white text-sm flex items-center"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2h2a1 1 0 100-2H9z" clipRule="evenodd" />
-          </svg>
-          Help
-        </button>
+        <NetworkSwitcher />
       </div>
 
       {showInstructions && (
@@ -175,16 +375,30 @@ export default function TransactionForm() {
             <li>Enter the amount to send</li>
             <li>Click send and approve the transaction in your wallet</li>
           </ol>
+          
           <div className="mt-2 text-white/70 text-xs">
-            <p>Note: This demo uses Solana's devnet. Make sure your wallet is connected to devnet.</p>
+            <p>Note: Make sure your wallet is connected to the correct network ({network}).</p>
           </div>
         </div>
       )}
       
+      <div className="mb-4 flex justify-between items-center">
+        <button 
+          type="button"
+          onClick={() => setShowInstructions(!showInstructions)}
+          className="text-white/80 hover:text-white text-sm flex items-center"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2h2a1 1 0 100-2H9z" clipRule="evenodd" />
+          </svg>
+          {showInstructions ? "Hide Help" : "Show Help"}
+        </button>
+      </div>
+      
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className="block text-white mb-2">Token Type</label>
-          <div className="flex space-x-4">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               className={`py-2 px-4 rounded ${
@@ -224,6 +438,9 @@ export default function TransactionForm() {
               className="w-full p-2 rounded bg-white/20 text-white placeholder:text-white/50"
               required={tokenType === "SPL"}
             />
+            <div className="text-xs text-white/70 mt-1">
+              Token accounts are automatically created when sending tokens
+            </div>
           </div>
         )}
         
@@ -271,9 +488,9 @@ export default function TransactionForm() {
       {status && (
         <div className={`mt-4 p-3 rounded ${status.success ? "bg-green-500/20" : "bg-red-500/20"}`}>
           <p className="text-sm text-white break-all">{status.message}</p>
-          {status.success && (
+          {status.success && status.message.includes("Signature:") && (
             <a
-              href={`https://explorer.solana.com/tx/${status.message.split(": ")[1]}?cluster=devnet`}
+              href={`https://explorer.solana.com/tx/${status.message.split(": ")[1]}?cluster=${network.toLowerCase()}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-sm text-white underline mt-2 block"
@@ -286,7 +503,7 @@ export default function TransactionForm() {
 
       <div className="mt-6 pt-4 border-t border-white/10 text-white/60 text-xs">
         <p>Connected: {publicKey?.toString().slice(0, 4)}...{publicKey?.toString().slice(-4)}</p>
-        <p className="mt-1">Network: Devnet</p>
+        <p className="mt-1">Network: {network}</p>
       </div>
     </div>
   );
